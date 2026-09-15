@@ -1,78 +1,52 @@
-# B2B SaaS Churn Risk & Customer Lifetime Value Analysis
+# B2B SaaS Churn Risk & LTV Analysis
 
-SQL analysis of churn risk, revenue at risk, and customer lifetime value (CLV) for a B2B SaaS account dataset.
+For this project I looked at a B2B SaaS dataset (3,000 accounts) to figure out what's actually driving churn and how much revenue is at risk because of it. All the analysis is SQL against a Supabase (Postgres) database.
 
-## Overview
+## The Data
 
-This project analyzes 3,000 SaaS accounts with MRR, subscription tier, tenure, engagement signals, NPS, estimated LTV, and a 30-day churn outcome. The source table is hosted in Supabase/Postgres as `b2b_saas_churn_ltv`.
+- Dataset: a B2B SaaS churn/LTV dataset I found (synthetic, not real company data)
+- 3,000 accounts across three plans: Starter ($49/mo), Professional ($199/mo), Enterprise ($999/mo)
+- Overall churn rate: 12.27% (368 out of 3,000 accounts churned)
+- `NPS_Score` is missing for about 20% of accounts (592 nulls)
+- I loaded it into Supabase as a table called `b2b_saas_churn_ltv`
 
-The analysis is designed to answer four practical questions:
+## A problem I found in the data (and why I'm calling it out instead of hiding it)
 
-1. Which behavioral signal best identifies near-term churn risk?
-2. Which plan tiers account for a disproportionate share of MRR at risk?
-3. Is elevated tier-level churn concentrated among new or long-tenured accounts?
-4. Does customer engagement explain projected expansion in LTV?
+Before I started building anything, I checked whether the columns actually meant what they said, and I found something important: `Estimated_LTV_USD` isn't really an independent number. For every single account that churned, LTV = MRR × Tenure_Months, exactly, no exceptions. For accounts that didn't churn, LTV is that same formula times some extra multiplier that doesn't seem tied to anything meaningful, like feature usage or support tickets, it's basically random.
 
-## Key findings
+Basically what that means: if I'd just thrown `Estimated_LTV_USD` into a regression model, I'd either be re-deriving a formula the dataset creator used (not a real insight) or accidentally leaking the churn answer into my LTV predictions. So instead of ignoring this, here's what I did:
 
-- **Login recency is the strongest single churn signal.** Churn rises as the number of days since the last login increases.
-- **Revenue risk is concentrated by plan tier.** Comparing account share, total MRR share, and MRR-at-risk share identifies tiers that are over-indexed on risk.
-- **Tier × tenure analysis separates onboarding risk from long-term retention risk.** The included crosstab applies a minimum cell-size threshold of 20 accounts.
-- **NPS is not predictive in this dataset.** Its correlation with churn is approximately 0.007 and the score buckets are non-monotonic.
-- **Estimated LTV contains target leakage.** For all churned accounts, `Estimated_LTV_USD = MRR_USD * Tenure_Months`. LTV is therefore not modeled as an independent target across the full dataset.
-- **Expansion is analyzed only among retained accounts.** The retained-account analysis tests whether the expansion multiplier is explained by engagement features.
+- I'm not treating LTV as something to predict for the whole dataset.
+- Where I do look at LTV, I only look at retained (non-churned) accounts, and I'm looking at the "extra multiplier" part instead of raw LTV.
+- The fact that this multiplier isn't explained by any behavior data is actually one of my findings, not just a technical footnote. See `sql/04_ltv_expansion_multiplier_check.sql`.
 
-## Dataset
+I think catching this before building on top of it matters more than the modeling itself, honestly.
 
-- 3,000 accounts across Starter ($49/month), Professional ($199/month), and Enterprise ($999/month)
-- 368 churned accounts; overall churn rate: 12.27%
-- `NPS_Score` has 592 null values (19.7% of rows)
-- Synthetic/Kaggle-style benchmark data; the dataset is not included in this repository
+## What I Found
 
-Expected columns:
+1. **How recently someone logged in is the biggest churn signal.** Out of everything I checked, days since last login had the strongest relationship with churn (r = 0.39, everything else was way weaker). I bucketed it into ranges to see where churn risk actually jumps — see `sql/01_churn_by_login_recency.sql`.
+2. **Revenue at risk isn't spread out evenly.** I compared how much of the total accounts vs. how much of the total MRR each plan tier represents, then compared that to how much MRR is walking out the door from churning accounts. See `sql/02_revenue_at_risk.sql`.
+3. **Enterprise churns more, but I still need to figure out why.** I built a crosstab of plan tier x tenure to see if Enterprise churn is mostly new accounts (onboarding issue) or accounts that have been around a while (long-term retention issue). [I haven't filled this part in yet — need to actually run `sql/03_churn_tier_x_tenure.sql` and look at the result before I can say which one it is.]
+4. **NPS doesn't actually predict churn here**, even though you'd expect it to. The correlation was basically zero (0.007) and didn't even move in a consistent direction across score buckets. I'm including this because I think it's more honest to show a finding that didn't confirm my assumption than to just leave it out.
+5. **The LTV "extra multiplier" isn't explained by anything I measured.** Tenure has some relationship to it, but engagement stuff (features used, tickets, login recency) basically doesn't. Details in the leakage section above.
 
-```text
-subscription_plan
-mrr_usd
-tenure_months
-days_since_last_login
-active_features_count
-support_tickets_last_30d
-nps_score
-estimated_ltv_usd
-churn_next_30d
+## Some Notes on How I Did This
+
+- Since only 12.27% of accounts churned, I know I can't just look at raw accuracy if I build a classifier later — I'd want to use PR-AUC and compare it against the baseline rate, not just ROC-AUC.
+- For the tier x tenure crosstab, I only trust groups with at least 20 accounts in them. Anything smaller and the churn rate percentage doesn't really mean anything (like if 1 out of 3 accounts churned, that's not a real "33% churn rate").
+- For the missing NPS values, I'm filling them with the median instead of anything fancier, since NPS barely correlates with churn anyway — didn't seem worth the extra complexity.
+
+## Repo Structure
+
+```
+sql/
+  01_churn_by_login_recency.sql
+  02_revenue_at_risk.sql
+  03_churn_tier_x_tenure.sql
+  04_ltv_expansion_multiplier_check.sql
+README.md
 ```
 
-## SQL workflow
+## Tools I Used
 
-| File | Purpose |
-| --- | --- |
-| [`sql/01_churn_by_login_recency.sql`](sql/01_churn_by_login_recency.sql) | Churn rate by days since last login |
-| [`sql/02_revenue_at_risk.sql`](sql/02_revenue_at_risk.sql) | Total revenue concentration and MRR at risk by tier |
-| [`sql/03_churn_tier_x_tenure.sql`](sql/03_churn_tier_x_tenure.sql) | Churn rate by plan tier and tenure bucket |
-| [`sql/04_ltv_expansion_multiplier_check.sql`](sql/04_ltv_expansion_multiplier_check.sql) | Retained-account expansion analysis and leakage validation |
-
-Run the queries in Supabase SQL Editor or any compatible PostgreSQL client after loading the source table.
-
-## Methodology notes
-
-- Churn is an imbalanced outcome, so predictive modeling should report PR-AUC alongside ROC-AUC and compare PR-AUC with the 12.27% base-rate baseline.
-- Crosstab cells with fewer than 20 accounts are excluded from reported rates to avoid unstable estimates.
-- For modeling, impute `NPS_Score` with the training-set median and add a missingness indicator.
-- Do not use `estimated_ltv_usd` as a churn-model feature or as a full-dataset regression target because it encodes the churn outcome.
-
-## Stack
-
-Supabase, PostgreSQL, and SQL.
-
-## Repository structure
-
-```text
-.
-├── README.md
-└── sql/
-    ├── 01_churn_by_login_recency.sql
-    ├── 02_revenue_at_risk.sql
-    ├── 03_churn_tier_x_tenure.sql
-    └── 04_ltv_expansion_multiplier_check.sql
-```
+Supabase (Postgres), SQL — [add BigQuery/Sheets/Excel here if I end up using them for anything downstream]
