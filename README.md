@@ -49,4 +49,4 @@ README.md
 
 ## Tools I Used
 
-Supabase (Postgres), SQL — [add BigQuery/Sheets/Excel here if I end up using them for anything downstream]
+Supabase (Postgres), SQL 
